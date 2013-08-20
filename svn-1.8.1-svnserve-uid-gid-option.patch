@@ -1,31 +1,47 @@
 diff -ruN subversion-1.8.1/subversion/svnserve/server.h subversion-1.8.1-drop/subversion/svnserve/server.h
---- subversion-1.8.1/subversion/svnserve/server.h	2013-04-12 09:44:37.000000000 +0200
-+++ subversion-1.8.1-drop/subversion/svnserve/server.h	2013-08-20 15:27:40.000000000 +0200
-@@ -131,6 +131,11 @@
- 
+--- subversion-1.8.1/subversion/svnserve/server.h       2013-04-12 09:44:37.000000000 +0200
++++ subversion-1.8.1-drop/subversion/svnserve/server.h  2013-08-21 00:59:01.000000000 +0200
+@@ -131,8 +131,16 @@
+
    /* Use virtual-host-based path to repo. */
    svn_boolean_t vhost;
-+  
-+  /* Run server as the specified UID and GID. Useful for dropping
-+     privileges when started by root. */
++
++  /* Privileges drop support */
 +  uid_t uid;
 +  gid_t gid;
++
  } serve_params_t;
- 
+
++uid_t _uname_to_uid(const char *, int *);
++gid_t _gname_to_gid(const char *, int *);
++
  /* Serve the connection CONN according to the parameters PARAMS. */
+ svn_error_t *serve(svn_ra_svn_conn_t *conn, serve_params_t *params,
+                    apr_pool_t *pool);
 diff -ruN subversion-1.8.1/subversion/svnserve/svnserve.c subversion-1.8.1-drop/subversion/svnserve/svnserve.c
---- subversion-1.8.1/subversion/svnserve/svnserve.c	2013-05-22 06:02:10.000000000 +0200
-+++ subversion-1.8.1-drop/subversion/svnserve/svnserve.c	2013-08-20 15:25:36.000000000 +0200
-@@ -162,6 +162,8 @@
+--- subversion-1.8.1/subversion/svnserve/svnserve.c     2013-05-22 06:02:10.000000000 +0200
++++ subversion-1.8.1-drop/subversion/svnserve/svnserve.c        2013-08-21 00:53:27.000000000 +0200
+@@ -61,6 +61,10 @@
+ #include <unistd.h>   /* For getpid() */
+ #endif
+
++/* Drop privileges support */
++#include <pwd.h>
++#include <grp.h>
++
+ #include "server.h"
+
+ /* The strategy for handling incoming connections.  Some of these may be
+@@ -162,6 +166,8 @@
      {"inetd",            'i', 0, N_("inetd mode")},
      {"tunnel",           't', 0, N_("tunnel mode")},
      {"listen-once",      'X', 0, N_("listen-once mode (useful for debugging)")},
-+    {"uid",              'u', 1, N_("drop privileges to uid (daemon mode)")},
-+    {"gid",              'g', 1, N_("drop privileges to gid (daemon mode)")},
++       {"uid",              'u', 1, N_("drop privileges to specified user (daemon mode)")},
++       {"gid",              'g', 1, N_("drop privileges to specified group (daemon mode)")},
  #ifdef WIN32
      {"service",          SVNSERVE_OPT_SERVICE, 0,
       N_("Windows service mode (Service Control Manager)")},
-@@ -539,6 +541,8 @@
+@@ -539,6 +545,8 @@
    params.tunnel = FALSE;
    params.tunnel_user = NULL;
    params.read_only = FALSE;
@@ -34,46 +50,125 @@ diff -ruN subversion-1.8.1/subversion/svnserve/svnserve.c subversion-1.8.1-drop/
    params.base = NULL;
    params.cfg = NULL;
    params.compression_level = SVN_DELTA_COMPRESSION_LEVEL_DEFAULT;
-@@ -588,6 +592,14 @@
+@@ -588,6 +596,34 @@
              }
            break;
- 
-+        case 'u':
-+          params.uid = atoi(arg);
-+          break;
+
++               case 'u':
++               {
++                       int result;
 +
-+        case 'g':
-+          params.gid = atoi(arg);
-+          break;
++                       params.uid      =       _uname_to_uid(arg, &result);
 +
++                       if( ! result)
++                       {
++                               svn_error_clear(svn_cmdline_fprintf(stderr, pool, _("Failed to find specified user id.\n")));
++                               return EXIT_FAILURE;
++                       }
++
++                       break;
++               }
++               case 'g':
++               {
++                       int result;
++
++                       params.gid      =       _gname_to_gid(arg, &result);
++
++                       if( ! result)
++                       {
++                               svn_error_clear(svn_cmdline_fprintf(stderr, pool, _("Failed to find specified group id.\n")));
++                               return EXIT_FAILURE;
++                       }
++
++                       break;
++               }
          case SVNSERVE_OPT_FOREGROUND:
            foreground = TRUE;
            break;
-@@ -963,8 +975,26 @@
- 
+@@ -963,7 +999,27 @@
+
  #if APR_HAS_FORK
    if (run_mode != run_mode_listen_once && !foreground)
--    apr_proc_detach(APR_PROC_DETACH_DAEMONIZE);
 +  {
-+    if ((params.gid != getgid()) && setregid(params.gid, params.gid) == -1) {
-+      svn_error_clear  
++    if ((params.gid != getgid()) && setregid(params.gid, params.gid) == -1)
++       {
++      svn_error_clear
 +        (svn_cmdline_fprintf
 +           (stderr, pool,
 +            _("Failed to set GID\n")));
 +      exit(1);
 +    }
- 
-+    if ((params.uid != getuid()) && setreuid(params.uid, params.uid) == -1) {
-+      svn_error_clear  
++
++    if ((params.uid != getuid()) && setreuid(params.uid, params.uid) == -1)
++       {
++      svn_error_clear
 +        (svn_cmdline_fprintf
 +           (stderr, pool,
 +            _("Failed to set UID\n")));
 +      exit(1);
 +    }
-+  
-+    apr_proc_detach(APR_PROC_DETACH_DAEMONIZE);
++
+     apr_proc_detach(APR_PROC_DETACH_DAEMONIZE);
 +  }
-+  
+
    apr_signal(SIGCHLD, sigchld_handler);
  #endif
- 
+@@ -1170,6 +1226,56 @@
+           svn_pool_destroy(connection_pool);
+         }
+     }
+-
+   /* NOTREACHED */
+ }
++
++
++uid_t _uname_to_uid(const char *uname, int *result)
++{
++       *result = 0;
++
++       struct passwd *pwd = calloc(1, sizeof(struct passwd));
++
++       if(pwd == NULL)
++               return;
++
++       size_t buffer_len = sysconf(_SC_GETPW_R_SIZE_MAX) * sizeof(char);
++       char *buffer = malloc(buffer_len);
++
++       if(buffer == NULL)
++               return;
++
++       getpwnam_r(uname, pwd, buffer, buffer_len, &pwd);
++
++       if(pwd == NULL)
++               return;
++
++       *result = 1;
++
++       return pwd->pw_uid;
++}
++
++gid_t _gname_to_gid(const char *gname, int *result)
++{
++       *result = 0;
++
++       struct group *grp = calloc(1, sizeof(struct group));
++
++       if(grp == NULL)
++               return;
++
++       size_t buffer_len = sysconf(_SC_GETGR_R_SIZE_MAX) * sizeof(char);
++       char *buffer = malloc(buffer_len);
++
++       if(buffer == NULL)
++               return;
++
++       getgrnam_r(gname, grp, buffer, buffer_len, &grp);
++
++       if(grp == NULL)
++               return;
++
++       *result = 1;
++
++       return grp->gr_gid;
++}
+\ No newline at end of file
