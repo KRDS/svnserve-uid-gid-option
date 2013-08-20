@@ -1,0 +1,79 @@
+diff -ruN subversion-1.8.1/subversion/svnserve/server.h subversion-1.8.1-drop/subversion/svnserve/server.h
+--- subversion-1.8.1/subversion/svnserve/server.h	2013-04-12 09:44:37.000000000 +0200
++++ subversion-1.8.1-drop/subversion/svnserve/server.h	2013-08-20 15:27:40.000000000 +0200
+@@ -131,6 +131,11 @@
+ 
+   /* Use virtual-host-based path to repo. */
+   svn_boolean_t vhost;
++  
++  /* Run server as the specified UID and GID. Useful for dropping
++     privileges when started by root. */
++  uid_t uid;
++  gid_t gid;
+ } serve_params_t;
+ 
+ /* Serve the connection CONN according to the parameters PARAMS. */
+diff -ruN subversion-1.8.1/subversion/svnserve/svnserve.c subversion-1.8.1-drop/subversion/svnserve/svnserve.c
+--- subversion-1.8.1/subversion/svnserve/svnserve.c	2013-05-22 06:02:10.000000000 +0200
++++ subversion-1.8.1-drop/subversion/svnserve/svnserve.c	2013-08-20 15:25:36.000000000 +0200
+@@ -162,6 +162,8 @@
+     {"inetd",            'i', 0, N_("inetd mode")},
+     {"tunnel",           't', 0, N_("tunnel mode")},
+     {"listen-once",      'X', 0, N_("listen-once mode (useful for debugging)")},
++    {"uid",              'u', 1, N_("drop privileges to uid (daemon mode)")},
++    {"gid",              'g', 1, N_("drop privileges to gid (daemon mode)")},
+ #ifdef WIN32
+     {"service",          SVNSERVE_OPT_SERVICE, 0,
+      N_("Windows service mode (Service Control Manager)")},
+@@ -539,6 +541,8 @@
+   params.tunnel = FALSE;
+   params.tunnel_user = NULL;
+   params.read_only = FALSE;
++  params.uid = getuid();
++  params.gid = getgid();
+   params.base = NULL;
+   params.cfg = NULL;
+   params.compression_level = SVN_DELTA_COMPRESSION_LEVEL_DEFAULT;
+@@ -588,6 +592,14 @@
+             }
+           break;
+ 
++        case 'u':
++          params.uid = atoi(arg);
++          break;
++
++        case 'g':
++          params.gid = atoi(arg);
++          break;
++
+         case SVNSERVE_OPT_FOREGROUND:
+           foreground = TRUE;
+           break;
+@@ -963,8 +975,26 @@
+ 
+ #if APR_HAS_FORK
+   if (run_mode != run_mode_listen_once && !foreground)
+-    apr_proc_detach(APR_PROC_DETACH_DAEMONIZE);
++  {
++    if ((params.gid != getgid()) && setregid(params.gid, params.gid) == -1) {
++      svn_error_clear  
++        (svn_cmdline_fprintf
++           (stderr, pool,
++            _("Failed to set GID\n")));
++      exit(1);
++    }
+ 
++    if ((params.uid != getuid()) && setreuid(params.uid, params.uid) == -1) {
++      svn_error_clear  
++        (svn_cmdline_fprintf
++           (stderr, pool,
++            _("Failed to set UID\n")));
++      exit(1);
++    }
++  
++    apr_proc_detach(APR_PROC_DETACH_DAEMONIZE);
++  }
++  
+   apr_signal(SIGCHLD, sigchld_handler);
+ #endif
+ 
